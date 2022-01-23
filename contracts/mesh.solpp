@@ -1,0 +1,215 @@
+pragma soliditypp ^0.4.3;
+
+contract Mesh {
+    // constants
+    tokenId constant MESH_TOKEN = "tti_3d482aaceb076a729cb3967b";
+    tokenId constant VITE_TOKEN = "tti_5649544520544f4b454e6e40";
+    uint constant DAY_PERIOD = 24*60*60;
+    uint constant LOCK_PERIOD = 3*DAY_PERIOD;
+    // 800T = 800,000,000,000,000 MESH
+    uint constant genesisAmount = 800000000000000*1e18;
+    // while waiting for the 8m vite to come, we vote for VitaminCoinSBP
+    string constant defaultSBP = "VitaminCoinSBP";
+    address constant consensusContractAddress = "vite_0000000000000000000000000000000000000004d28108e76b";
+    address constant tokenIssuanceContractAddress = "vite_000000000000000000000000000000000000000595292d996d";
+    address constant stakingAddress = "vite_4bbc2b1bc2f8317b7df5c37fb8f81d4d0a882286225890d3ff";
+    string SBPName = "MeshSBP";
+    message VoteForSBP(string sbpName);
+    message WithdrawSBPReward(string sbpName, address receiveAddress);
+
+    // state
+    uint presaleState;
+    uint soldPresale = 0;
+
+    // rewards state
+    struct Rewards {
+        uint totalVite;
+        uint totalStaked;
+    }
+    uint rewardsIndex;
+    mapping(uint => Rewards) rewards;
+    mapping(address => uint) nextRewardToClaim;
+    mapping(address => uint) stakedAmount;
+    mapping(address => uint) lockedUntil;
+    uint totalStaked;
+
+    getter getLockPeriod() returns(uint) {
+        return LOCK_PERIOD;
+    }
+    getter getMeshToken() returns(tokenId) {
+        return MESH_TOKEN;
+    }
+    getter getSoldPresale() returns(uint) {
+        return soldPresale;
+    }
+    getter getPresaleState() returns(uint) {
+        return presaleState;
+    }
+    getter getRewardByIndex(uint index) returns(uint totalVite, uint totalstaked) {
+        Rewards storage reward = rewards[index];
+        return (reward.totalVite, reward.totalStaked);
+    }
+    getter getLatestRewardIndex() returns(uint index) {
+        return rewardsIndex-1;
+    }
+    getter getLatestReward() returns(uint index, uint totalVite, uint totalstaked) {
+        Rewards storage reward = rewards[rewardsIndex-1];
+        return (rewardsIndex-1, reward.totalVite, reward.totalStaked);
+    }
+    getter getTotalStaked() returns(uint) {
+        return totalStaked;
+    }
+    getter getStakedAmount(address addr) returns(uint) {
+        return stakedAmount[addr];
+    }
+    getter getLockedUntil(address addr) returns(uint) {
+        return lockedUntil[addr];
+    }
+    getter getNextReward(address addr) returns(uint) {
+        return nextRewardToClaim[addr];
+    }
+    getter getWithdrawableRewards(address addr) returns(uint) {
+        if(stakedAmount[addr] == 0)return 0;
+        if(nextRewardToClaim[addr] == rewardsIndex)return 0;
+        uint totalVite = 0;
+        uint limit = rewardsIndex;
+        for(uint i = nextRewardToClaim[addr]; i < limit; i++){
+            totalVite += stakedAmount[addr] * rewards[i].totalVite / rewards[i].totalStaked;
+        }
+        return 0;
+    }
+
+    constructor() public payable {
+        // pumping vitc sbp while we don't have ours yet
+        send(consensusContractAddress, VoteForSBP(defaultSBP));
+    }
+
+    event PresaleBuy(address indexed addr, uint amount, uint presaleSold);
+    event PresaleRefund(address indexed addr, uint amount, uint presaleSold);
+    event PresaleEnd();
+    event RewardsReceived(uint totalVite, uint totalMesh);
+    onMessage() payable {
+        require(msg.amount > 0);
+        if(msg.tokenid == VITE_TOKEN && presaleState == 1){
+            // 1 vite = 100,000,000 mesh
+            uint allowedAmount = msg.amount*1e8;
+            
+            if(soldPresale + allowedAmount > genesisAmount){
+                allowedAmount = genesisAmount-soldPresale;
+                // Refund the user the leftover
+                msg.sender.transfer(VITE_TOKEN, msg.amount-(allowedAmount/1e8));
+            }
+            emit PresaleBuy(msg.sender, allowedAmount, soldPresale + allowedAmount);
+            soldPresale += allowedAmount;
+
+            if(soldPresale == genesisAmount){
+                // close presale, everything has been sold
+                presaleState = 2;
+                // presale complete
+                // Can't register sbp in the smart contract yet
+                // Transfer 1m vite to Thomiz's address, so he registers the sbp instead.
+                // Also transfer 10k for listing
+                stakingAddress.transfer(VITE_TOKEN, (1e6+1e4)*1e18);
+                emit PresaleEnd();
+            }
+            msg.sender.transfer(MESH_TOKEN, allowedAmount);
+        }else if(msg.tokenid == VITE_TOKEN && msg.sender == tokenIssuanceContractAddress){
+            // rewards, pog
+            uint index = rewardsIndex;
+            rewardsIndex++;
+            rewards[index].totalVite = msg.amount;
+            rewards[index].totalStaked = totalStaked;
+            emit RewardsReceived(msg.amount, totalStaked);
+        }else if(msg.tokenid == MESH_TOKEN){
+            if(presaleState == 1){
+                // can just exchange at normal price in case Mesh isn't successfull, you get a refund.
+                // and obv, if we didn't get 8m vite yet, the presale isn't over.
+                uint refunded = (msg.amount/1e8)*1e8;
+                require(refunded > 0);
+                uint leftovers = msg.amount-refunded;
+                soldPresale -= refunded;
+                emit PresaleRefund(msg.sender, refunded, soldPresale);
+                if(leftovers > 0){
+                    // has raws
+                    msg.sender.transfer(MESH_TOKEN, leftovers);
+                }
+                msg.sender.transfer(VITE_TOKEN, msg.amount/1e8);
+            }else{
+                // after we buy sbp, you can't go back.
+                revert();
+            }
+        }else{
+            // idk, refund
+            revert();
+        }
+    }
+
+    onMessage fund() payable {
+        require(msg.amount == genesisAmount && presaleState == 0 && msg.tokenid == MESH_TOKEN);
+        presaleState = 1;
+    }
+
+    onMessage voteSBP(string calldata sbpName){
+        require(msg.sender == stakingAddress && (presaleState == 2 || presaleState == 3));
+        // vote for mesh sbp
+        send(consensusContractAddress, VoteForSBP(sbpName));
+        SBPName = sbpName;
+        presaleState = 3;
+    }
+
+    event MeshStaking(address indexed addr, uint amount, uint staked, uint lock, uint totalStaked);
+    onMessage stakeMesh() payable {
+        require(msg.tokenid == MESH_TOKEN && msg.amount > 0 && presaleState == 3);
+        claimRewards(msg.sender);
+        stakedAmount[msg.sender] += msg.amount;
+        totalStaked += msg.amount;
+        lockedUntil[msg.sender] = block.number + LOCK_PERIOD;
+        emit MeshStaking(msg.sender, msg.amount, stakedAmount[msg.sender], lockedUntil[msg.sender], totalStaked);
+    }
+
+    event MeshUnstaking(address indexed addr, uint amount, uint totalStaked);
+    onMessage unstakeMesh() {
+        require(stakedAmount[msg.sender] > 0);
+        require(lockedUntil[msg.sender] >= block.number);
+
+        claimRewards(msg.sender);
+        totalStaked -= stakedAmount[msg.sender];
+        emit MeshUnstaking(msg.sender, stakedAmount[msg.sender], totalStaked);
+
+        msg.sender.transfer(MESH_TOKEN, stakedAmount[msg.sender]);
+        stakedAmount[msg.sender] = 0;
+    }
+
+    uint lastBlockClaimed;
+
+    getter getLastBlockClaimed() returns(uint) {
+        return lastBlockClaimed;
+    }
+    onMessage withdrawSBPRewards(){
+        require(presaleState == 3);
+        require(lastBlockClaimed < block.number - 60*60);
+        lastBlockClaimed = block.number;
+        send(consensusContractAddress, WithdrawSBPReward(SBPName, address(this)));
+    }
+
+    onMessage withdrawVite() {
+        claimRewards(msg.sender);
+    }
+
+    event RewardsWithdraw(address indexed addr, uint amount, uint index);
+    function claimRewards(address addr) public {
+        if(stakedAmount[addr] == 0)nextRewardToClaim[addr] = rewardsIndex;
+        if(nextRewardToClaim[addr] == rewardsIndex)return;
+        uint totalVite = 0;
+        uint limit = nextRewardToClaim[addr]+7;
+        if(limit > rewardsIndex){
+            limit = rewardsIndex;
+        }
+        for(uint i = nextRewardToClaim[addr]; i < limit; i++){
+            totalVite += stakedAmount[addr] * rewards[i].totalVite / rewards[i].totalStaked;
+        }
+        addr.transfer(VITE_TOKEN, totalVite);
+        nextRewardToClaim[addr] = limit;
+        emit RewardsWithdraw(addr, totalVite, rewardsIndex-1);
+    }
+}
