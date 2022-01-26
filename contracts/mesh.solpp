@@ -2,7 +2,7 @@ pragma soliditypp ^0.4.3;
 
 contract Mesh {
     // constants
-    tokenId constant MESH_TOKEN = "tti_3d482aaceb076a729cb3967b";
+    tokenId constant MESH_TOKEN = "tti_8b971a1b4735fcd83c999272";
     tokenId constant VITE_TOKEN = "tti_5649544520544f4b454e6e40";
     uint constant DAY_PERIOD = 24*60*60;
     uint constant LOCK_PERIOD = 3*DAY_PERIOD;
@@ -33,6 +33,9 @@ contract Mesh {
     mapping(address => uint) lockedUntil;
     uint totalStaked;
 
+    getter getStakingAddress() returns(address) {
+        return stakingAddress;
+    }
     getter getLockPeriod() returns(uint) {
         return LOCK_PERIOD;
     }
